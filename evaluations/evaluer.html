@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Évaluer les projets — Net1</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { max-width: 1600px; }
+  .top { display: grid; grid-template-columns: 1fr auto; gap: 16px; align-items: start; margin-bottom: 20px; }
+  .picker { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .picker select { min-width: 280px; }
+  .who { margin: 10px 0 0; color: var(--text-secondary); font-size: 14px; }
+  .who a { margin-right: 12px; }
+  .grade { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; min-width: 220px; text-align: right; }
+  .grade .v { font-size: 40px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .grade .v small { font-size: 18px; color: var(--text-secondary); font-weight: 500; }
+  .grade .l { color: var(--text-secondary); font-size: 13px; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 1000px) { .split { grid-template-columns: 1fr; } .top { grid-template-columns: 1fr; } .grade { text-align: left; } }
+  .pane { display: flex; flex-direction: column; min-width: 0; }
+  .pane-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .pane-head h2 { margin: 0; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 4px; }
+  .tabs button { padding: 4px 10px; font-size: 13px; cursor: pointer; }
+  .tabs button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+  iframe { width: 100%; height: 72vh; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+  .msg { font-size: 13px; color: var(--text-secondary); margin: 0 0 8px; }
+  .msg.warn::before { content: "! "; color: var(--warning); font-weight: 700; }
+  tr.clickable { cursor: pointer; }
+  tr.clickable:hover td { background: var(--surface-0); }
+  tr.current td { background: var(--surface-0); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <div>
+      <h1>Évaluer les projets</h1>
+      <div class="picker">
+        <button id="prev" title="Projet précédent">←</button>
+        <select id="project" aria-label="Projet"></select>
+        <button id="next" title="Projet suivant">→</button>
+      </div>
+      <p class="who" id="who"></p>
+    </div>
+    <div class="grade" id="grade"><div class="l loading">Chargement…</div></div>
+  </div>
+
+  <div class="split">
+    <section class="card pane">
+      <div class="pane-head">
+        <h2>Versions du projet</h2>
+        <div class="tabs" id="versions"></div>
+      </div>
+      <p class="msg" id="versionsMsg"></p>
+      <iframe id="site" title="Version du projet" loading="lazy"></iframe>
+    </section>
+
+    <section class="card pane">
+      <div class="pane-head">
+        <h2>Formulaire d'évaluation</h2>
+        <a id="formLink" target="_blank" rel="noopener">Ouvrir dans un onglet ↗</a>
+      </div>
+      <p class="msg" id="formMsg"></p>
+      <iframe id="form" title="Formulaire d'évaluation du projet" loading="lazy"></iframe>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2>Calcul de l'évaluation finale</h2>
+    <p class="note">Chaque réponse du fichier « Résultat de l'évaluation des projets » est ramenée sur 20 :
+      on prend la note globale de la grille si elle existe (colonne « Note … /N »), sinon la somme des critères notés
+      divisée par la somme de leurs maximums (Oui = 1, Non = 0). La note finale est la moyenne de ces notes.</p>
+    <div id="calc"></div>
+  </section>
+
+  <section class="card">
+    <h2>Vue d'ensemble</h2>
+    <p class="note">Cliquez sur une ligne pour évaluer ce projet.</p>
+    <div class="scroll"><table id="overview"></table></div>
+  </section>
+</main>
+<div class="tooltip" id="tip"></div>
+
+<script src="lib.js"></script>
+<script>
+const PROJECTS = "https://docs.google.com/spreadsheets/d/e/2PACX-1vS83YiDaS5kZHe4HefAhurQVgqX3Ii48Ma-ZZjn9qeE-zowumSh1Ss2jqrAcm9S2CtYSDtpMBg6CwiP/pub?gid=0&single=true&output=csv";
+const fmt = d3.format(".2f");
+
+/* ---------- Dépôt GitHub ---------- */
+function repoOf(p) {
+  // le site GitHub Pages donne le nom réel du dépôt (url_code peut contenir .git ou /blob/…)
+  let m = (p.url_site || "").match(/https?:\/\/([^.]+)\.github\.io\/([^/?#]+)/i);
+  if (m) return { owner: m[1], repo: m[2] };
+  m = (p.url_code || "").match(/github\.com\/([^/]+)\/([^/?#]+)/i);
+  return m ? { owner: m[1], repo: m[2].replace(/\.git$/, "") } : null;
+}
+function siteBase(p) {
+  const u = (p.url_site || "").trim();
+  return u ? (u.endsWith("/") ? u : u + "/") : null;
+}
+async function listVersions(p) {
+  const r = repoOf(p);
+  if (!r) throw new Error("dépôt GitHub introuvable");
+  const key = `versions:${r.owner}/${r.repo}`.toLowerCase();
+  const cached = sessionStorage.getItem(key);
+  if (cached) return JSON.parse(cached);
+  const resp = await fetch(`https://api.github.com/repos/${r.owner}/${r.repo}/contents/`);
+  if (!resp.ok) throw new Error(resp.status === 403 ? "limite de l'API GitHub atteinte (60 requêtes/heure)" : `API GitHub : ${resp.status}`);
+  const files = await resp.json();
+  const versions = [];
+  for (const f of files) {
+    let m;
+    if (f.type === "file" && (m = f.name.match(/^index[._-]?(\d*)\.(html?|php)$/i))) {
+      versions.push({ path: f.name === "index.html" ? "" : f.name, file: f.name, n: m[1] === "" ? Infinity : +m[1], label: m[1] === "" ? "actuelle" : `v${m[1]}`, php: /php$/i.test(f.name) });
+    } else if (f.type === "dir" && (m = f.name.match(/^v(\d+)$/i))) {
+      versions.push({ path: f.name + "/", file: f.name + "/", n: +m[1], label: `v${m[1]} (dossier)` });
+    }
+  }
+  versions.sort((a, b) => a.n - b.n);
+  sessionStorage.setItem(key, JSON.stringify(versions));
+  return versions;
+}
+
+/* ---------- Formulaire ---------- */
+function embedForm(url) {
+  if (!url) return null;
+  if (/docs\.google\.com\/forms\//.test(url)) {
+    const u = new URL(url);
+    u.searchParams.set("embedded", "true");
+    return u.toString();
+  }
+  return url; // lien court forms.gle : redirigé par Google
+}
+
+/* ---------- Notes ---------- */
+function scoreRows(res, an) {
+  if (!an || !res.rows) return [];
+  const crit = an.criteria.filter(c => c.type === "num" || c.type === "yn");
+  const global = crit.filter(c => c.type === "num" && /\bnote\b|total/i.test(c.col) && maxFromHeader(c.col))
+    .sort((a, b) => b.max - a.max)[0];
+  const parts = crit.filter(c => c !== global);
+  return res.rows.map(r => {
+    const who = an.identity.map(i => (r[i] || "").trim()).filter(Boolean).join(" · ");
+    if (global && !isNaN(toNumber(r[global.col]))) {
+      return { date: r[COLS.date] || r.Horodateur, who, score: toNumber(r[global.col]) / global.max * 20, how: `${cleanLabel(global.label)} : ${r[global.col]} / ${global.max}` };
+    }
+    let got = 0, max = 0;
+    for (const c of parts) {
+      const v = c.type === "yn" ? (/^oui$/i.test((r[c.col] || "").trim()) ? 1 : /^non$/i.test((r[c.col] || "").trim()) ? 0 : NaN) : toNumber(r[c.col]);
+      if (isNaN(v)) continue;
+      got += v; max += c.type === "yn" ? 1 : c.max;
+    }
+    return max ? { date: r.Horodateur, who, score: got / max * 20, how: `somme des critères : ${d3.format("~g")(got)} / ${d3.format("~g")(max)}` } : null;
+  }).filter(Boolean);
+}
+
+/* ---------- Données ---------- */
+let projects = [], current = 0;
+
+function matchGrid(p, grids) {
+  const keys = [p.github, repoOf(p)?.owner].filter(Boolean).map(s => s.trim().toLowerCase());
+  return grids.find(g => keys.includes(g[COLS.login].trim().toLowerCase())) || null;
+}
+
+function displayName(p) { return `${p.prenom} ${p.nom}`.trim(); }
+
+function renderGrade(p) {
+  const el = d3.select("#grade");
+  if (p.final == null) {
+    el.html(`<div class="l">Note finale</div><div class="v">—<small> /20</small></div><div class="l">${p.gridRow ? (p.res?.status === "bad" ? "résultats non lisibles" : "aucune évaluation") : "pas de grille déposée"}</div>`);
+  } else {
+    el.html(`<div class="l">Note finale</div><div class="v">${fmt(p.final)}<small> /20</small></div><div class="l">moyenne de ${p.scores.length} évaluation${p.scores.length > 1 ? "s" : ""}</div>`);
+  }
+}
+
+async function renderVersions(p) {
+  const tabs = d3.select("#versions").html(""), msg = d3.select("#versionsMsg").attr("class", "msg").text("Recherche des versions sur GitHub…");
+  const iframe = d3.select("#site"), base = siteBase(p);
+  const show = v => {
+    tabs.selectAll("button").attr("aria-pressed", d => d === v);
+    iframe.attr("src", base + v.path);
+    msg.html(`<a href="${esc(base + v.path)}" target="_blank" rel="noopener">${esc(v.file)} ↗</a>${v.php ? " — fichier PHP : GitHub Pages ne l'exécute pas" : ""}`);
+  };
+  try {
+    const versions = await listVersions(p);
+    if (projects[current] !== p) return; // changement de projet entre-temps
+    if (!versions.length) { msg.attr("class", "msg warn").text("Aucun fichier index*.html trouvé à la racine du dépôt."); iframe.attr("src", base); return; }
+    tabs.selectAll("button").data(versions).join("button").text(v => v.label).attr("title", v => v.file).on("click", (ev, v) => show(v));
+    show(versions[versions.length - 1]);
+  } catch (e) {
+    if (projects[current] !== p) return;
+    msg.attr("class", "msg warn").text(`Versions non détectées (${e.message}). Affichage du site publié.`);
+    iframe.attr("src", base);
+  }
+}
+
+function renderForm(p) {
+  const url = p.gridRow?.[COLS.gridP];
+  const iframe = d3.select("#form"), link = d3.select("#formLink"), msg = d3.select("#formMsg");
+  if (!url) {
+    iframe.attr("src", "about:blank"); link.style("display", "none");
+    msg.attr("class", "msg warn").text(`Aucune grille d'évaluation n'a été déposée pour « ${p.github} » dans le formulaire des grilles.`);
+    return;
+  }
+  link.style("display", null).attr("href", url);
+  msg.attr("class", "msg").text(`Grille proposée par ${p.gridRow[COLS.login]}.`);
+  iframe.attr("src", embedForm(url));
+}
+
+function renderCalc(p) {
+  const el = d3.select("#calc").html("");
+  if (!p.gridRow) { el.append("p").attr("class", "empty").text("Pas de grille, donc pas de résultats à cumuler."); return; }
+  const res = p.res;
+  el.append("p").attr("class", "note").html(`Résultats : ${statusHTML(res.status, res.label, res.fixed)} <a href="${esc(p.gridRow[COLS.resP])}" target="_blank" rel="noopener">↗</a>`);
+  if (!p.scores.length) {
+    el.append("p").attr("class", "empty").text(res.status === "bad" ? "Le fichier de résultats doit être publié sur le Web au format CSV pour être lu." : "Aucune évaluation exploitable pour l'instant.");
+    return;
+  }
+  // bande 0–20 : une marque par évaluation + la moyenne
+  const W = el.node().clientWidth, H = 64, m = { l: 12, r: 12, t: 14, b: 22 };
+  const x = d3.scaleLinear().domain([0, 20]).range([m.l, W - m.r]);
+  const svg = el.append("svg").attr("width", W).attr("height", H);
+  svg.append("g").attr("class", "grid").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(10).tickSize(-(H - m.t - m.b)).tickFormat(""));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(10));
+  const cy = (H - m.b + m.t) / 2;
+  svg.append("line").attr("x1", x(p.final)).attr("x2", x(p.final)).attr("y1", m.t - 6).attr("y2", H - m.b).attr("stroke", "var(--text-primary)").attr("stroke-width", 2);
+  svg.append("text").attr("x", x(p.final)).attr("y", m.t - 8).attr("text-anchor", "middle").style("fill", "var(--text-primary)").style("font-weight", 600).text(`moyenne ${fmt(p.final)}`);
+  const g = svg.selectAll("g.pt").data(p.scores).join("g").attr("class", "pt").attr("transform", d => `translate(${x(d.score)},${cy})`);
+  g.append("circle").attr("r", 12).attr("fill", "transparent");
+  g.append("circle").attr("r", 6).attr("fill", "var(--series-1)").attr("fill-opacity", 0.85).attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  g.on("mousemove", (ev, d) => showTip(ev, `<b>${fmt(d.score)} / 20</b>${esc(d.who || "évaluation")}<br>${esc(d.how)}`)).on("mouseleave", hideTip);
+
+  const t = el.append("div").attr("class", "scroll").append("table");
+  t.append("thead").html(`<tr><th>Date</th><th>Identification</th><th>Calcul</th><th class="num">Note /20</th></tr>`);
+  const tb = t.append("tbody");
+  tb.selectAll("tr").data(p.scores).join("tr").html(d => `<td>${esc(d.date)}</td><td>${esc(d.who)}</td><td>${esc(d.how)}</td><td class="num">${fmt(d.score)}</td>`);
+  tb.append("tr").html(`<th colspan="3">Note finale (moyenne)</th><th class="num">${fmt(p.final)}</th>`);
+
+  const crit = p.an.criteria.filter(c => c.type === "num" || c.type === "yn");
+  if (crit.length) {
+    const d = el.append("details");
+    d.append("summary").text("Moyenne par critère");
+    const ct = d.append("table");
+    ct.append("thead").html(`<tr><th>Critère</th><th class="num">Moyenne</th><th class="num">Réponses</th></tr>`);
+    ct.append("tbody").selectAll("tr").data(crit).join("tr").html(c => `<td>${esc(c.label)}</td><td class="num">${c.type === "num" ? `${d3.format(".2~f")(c.mean)} / ${c.max}` : `${c.oui} oui / ${c.n}`}</td><td class="num">${c.n}</td>`);
+  }
+}
+
+function renderOverview() {
+  const t = d3.select("#overview").html("");
+  t.append("thead").html(`<tr><th>Projet</th><th>Étudiant·e</th><th>Grille</th><th>Résultats</th><th class="num">Évaluations</th><th class="num">Note finale /20</th></tr>`);
+  t.append("tbody").selectAll("tr").data(projects).join("tr")
+    .attr("class", (p, i) => "clickable" + (i === current ? " current" : ""))
+    .on("click", (ev, p) => select(projects.indexOf(p)))
+    .html(p => `<td>${esc(repoOf(p)?.repo || "")}</td><td>${esc(displayName(p))}</td>
+      <td>${p.gridRow ? statusHTML("good", "déposée") : statusHTML("bad", "absente")}</td>
+      <td>${p.res ? statusHTML(p.res.status, p.res.label) : "—"}</td>
+      <td class="num">${p.scores.length}</td><td class="num">${p.final == null ? "—" : fmt(p.final)}</td>`);
+}
+
+function select(i) {
+  current = (i + projects.length) % projects.length;
+  const p = projects[current];
+  d3.select("#project").property("value", current);
+  history.replaceState(null, "", "#" + encodeURIComponent(repoOf(p)?.owner || p.github));
+  const r = repoOf(p);
+  d3.select("#who").html(`${esc(displayName(p))} &nbsp; <a href="${esc(p.url_code)}" target="_blank" rel="noopener">code GitHub ↗</a><a href="${esc(p.url_site)}" target="_blank" rel="noopener">site ↗</a>`);
+  renderGrade(p);
+  renderVersions(p);
+  renderForm(p);
+  renderCalc(p);
+  d3.select("#overview").selectAll("tbody tr").attr("class", (d, j) => "clickable" + (j === current ? " current" : ""));
+}
+
+(async function main() {
+  let list, grids;
+  try { [list, grids] = await Promise.all([d3.csv(PROJECTS), d3.csv(SOURCE)]); }
+  catch (e) { d3.select("#grade").html(`<div class="l">Impossible de charger les CSV : ${esc(e.message)}</div>`); return; }
+  projects = list.filter(p => p.valide !== "0");
+  await Promise.all(projects.map(async p => {
+    p.gridRow = matchGrid(p, grids);
+    p.res = p.gridRow ? await loadResult(p.gridRow[COLS.resP]) : null;
+    p.an = p.res ? analyse(p.res) : null;
+    p.scores = p.res ? scoreRows(p.res, p.an) : [];
+    p.final = p.scores.length ? d3.mean(p.scores, s => s.score) : null;
+  }));
+
+  d3.select("#project").selectAll("option").data(projects).join("option")
+    .attr("value", (p, i) => i).text(p => `${repoOf(p)?.repo || "?"} — ${displayName(p)}`);
+  d3.select("#project").on("change", function () { select(+this.value); });
+  d3.select("#prev").on("click", () => select(current - 1));
+  d3.select("#next").on("click", () => select(current + 1));
+  renderOverview();
+
+  const h = decodeURIComponent(location.hash.slice(1)).toLowerCase();
+  const start = h ? projects.findIndex(p => [p.github, repoOf(p)?.owner].some(k => k && k.toLowerCase() === h)) : 0;
+  select(Math.max(0, start));
+})();
+</script>
+</body>
+</html>
