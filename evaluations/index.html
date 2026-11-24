@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Analyse des grilles d'évaluation — Net1</title>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-0: #f4f4f1;
+    --surface-1: #fcfcfb;
+    --text-primary: #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted: #7a7974;
+    --grid: #e1e0d9;
+    --axis: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    --series-1: #2a78d6;   /* projets */
+    --series-2: #eb6834;   /* présentations */
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --seq-0: #f1f5fb;
+    --seq-1: #9ec5f4;
+    --seq-2: #3987e5;
+    --seq-3: #184f95;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --surface-0: #111110;
+      --surface-1: #1a1a19;
+      --text-primary: #f0efec;
+      --text-secondary: #c3c2b7;
+      --text-muted: #8e8d86;
+      --grid: #2c2c2a;
+      --axis: #383835;
+      --border: rgba(255,255,255,0.10);
+      --series-1: #3987e5;
+      --series-2: #d95926;
+      --seq-0: #22262c;
+      --seq-1: #1c5cab;
+      --seq-2: #3987e5;
+      --seq-3: #9ec5f4;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--surface-0); color: var(--text-primary);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 64px; }
+  h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  h2 { font-size: 18px; margin: 0 0 4px; }
+  p.lead { color: var(--text-secondary); margin: 0 0 24px; max-width: 70ch; }
+  p.note { color: var(--text-secondary); margin: 0 0 16px; font-size: 14px; max-width: 80ch; }
+  a { color: var(--series-1); }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; margin-bottom: 20px;
+  }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi { background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .kpi .v { font-size: 30px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .kpi .l { color: var(--text-secondary); font-size: 13px; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; white-space: nowrap; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+  th { color: var(--text-secondary); font-weight: 600; font-size: 13px; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .controls { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 16px; }
+  select, button {
+    font: inherit; font-size: 14px; color: var(--text-primary); background: var(--surface-0);
+    border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px;
+  }
+  .seg button[aria-pressed="true"] { background: var(--text-primary); color: var(--surface-1); }
+  .seg { display: inline-flex; gap: 4px; }
+  .legend { display: flex; gap: 16px; font-size: 13px; color: var(--text-secondary); margin: 4px 0 8px; flex-wrap: wrap; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 12px; height: 12px; border-radius: 3px; }
+  svg text { fill: var(--text-secondary); font-size: 12px; }
+  svg .axis path, svg .axis line { stroke: var(--axis); }
+  svg .grid line { stroke: var(--grid); }
+  svg .grid path { display: none; }
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 10; max-width: 360px;
+    background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+    opacity: 0; transition: opacity .1s;
+  }
+  .tooltip b { display: block; margin-bottom: 2px; }
+  .comments { list-style: none; padding: 0; margin: 0; }
+  .comments li { border-left: 3px solid var(--grid); padding: 4px 10px; margin: 6px 0; color: var(--text-secondary); }
+  .comments li em { color: var(--text-muted); font-style: normal; font-size: 12px; }
+  .empty { color: var(--text-muted); font-style: italic; }
+  .loading { color: var(--text-muted); }
+  details summary { cursor: pointer; color: var(--text-secondary); font-size: 14px; margin-top: 12px; }
+  .heat td { text-align: center; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Analyse des grilles d'évaluation</h1>
+  <p class="lead">Chaque étudiant·e a proposé deux grilles (projets et présentations) et publié leurs résultats.
+    Cette page lit les réponses du formulaire, vérifie l'accès aux résultats publiés, puis analyse les critères et les notes.</p>
+
+  <div class="kpis" id="kpis"><div class="kpi loading">Chargement…</div></div>
+
+  <section class="card">
+    <h2>Chronologie des dépôts</h2>
+    <p class="note">Un point par réponse au formulaire. Survolez pour voir le login.</p>
+    <div id="timeline"></div>
+  </section>
+
+  <section class="card">
+    <h2>État des liens fournis</h2>
+    <p class="note">Les résultats doivent être publiés en CSV (<code>Fichier › Partager › Publier sur le Web › CSV</code>) pour être lisibles.
+      Un lien <code>pubhtml</code> ou <code>/edit</code> est converti automatiquement quand c'est possible.</p>
+    <div class="scroll"><table id="links"></table></div>
+  </section>
+
+  <section class="card">
+    <h2>Taille des grilles</h2>
+    <p class="note">Nombre de critères (colonnes hors horodatage, identité et e-mail) dans chaque grille de résultats lisible.</p>
+    <div class="legend">
+      <span><i class="swatch" style="background:var(--series-1)"></i>Projets</span>
+      <span><i class="swatch" style="background:var(--series-2)"></i>Présentations</span>
+    </div>
+    <div id="sizes"></div>
+  </section>
+
+  <section class="card">
+    <h2>Thèmes couverts par les critères</h2>
+    <p class="note">Les intitulés des critères sont rattachés à des thèmes par mots-clés. La case indique combien de critères d'une grille relèvent de chaque thème.</p>
+    <div class="controls seg" id="themeSeg">
+      <button aria-pressed="true" data-k="projets">Projets</button>
+      <button aria-pressed="false" data-k="presentations">Présentations</button>
+    </div>
+    <div class="scroll"><div id="themes"></div></div>
+  </section>
+
+  <section class="card">
+    <h2>Détail d'une grille</h2>
+    <div class="controls">
+      <label>Étudiant·e <select id="who"></select></label>
+      <span class="seg" id="kindSeg">
+        <button aria-pressed="true" data-k="projets">Projets</button>
+        <button aria-pressed="false" data-k="presentations">Présentations</button>
+      </span>
+    </div>
+    <div id="detail"></div>
+  </section>
+</main>
+<div class="tooltip" id="tip"></div>
+
+<script>
+const SOURCE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQquSPj8u65m-DQ3Ey3TDspKyf-z0F9S1Sfef0bvkwZ4NfNuDHQdOxov64uT1rXp84lYvVldrGhu_y6/pub?gid=835244219&single=true&output=csv";
+
+const COLS = {
+  date: "Horodateur",
+  login: "Votre login Github",
+  gridP: "Votre proposition de grille d'évaluation pour les projets",
+  resP: "Résultat de l'évaluation des projets",
+  gridS: "Votre proposition de grille d'évaluation pour les présentations",
+  resS: "Résultat de l'évaluation des présentations",
+};
+const KINDS = {
+  projets: { label: "Projets", grid: "gridP", res: "resP", color: "var(--series-1)" },
+  presentations: { label: "Présentations", grid: "gridS", res: "resS", color: "var(--series-2)" },
+};
+
+const THEMES = [
+  ["Fonctionnement", /fonctionn|marche|stabilit|bug|fiabil/i],
+  ["Ergonomie / UX", /ergonom|\bux\b|exp[ée]rience utilisateur|parcours|navigation|interface|utiliser facilement/i],
+  ["Design visuel", /visuel|design|direction artistique|esth[ée]t|identit[ée]/i],
+  ["Interactivité", /interactiv|interaction/i],
+  ["Technique / code", /technique|code|github|technolog|d[ée]ploi|h[ée]berg|portabilit/i],
+  ["Contenus / données", /contenu|donn[ée]es|ressource/i],
+  ["Documentation", /documentation|guide/i],
+  ["Originalité / pertinence", /originalit|pertinen|cr[ée]ativit|concept|utilit|probl[ée]matique/i],
+  ["Évolution / démarche", /[ée]volution|version|progression|d[ée]marche|it[ée]ration|roadmap|feuille de route/i],
+  ["Clarté du discours", /clart|structur|compr[ée]hensible|objectif|but du jeu|propos/i],
+  ["Oral", /oral|aisance|discours|conviction|expression/i],
+  ["Temps", /temps|minutes|dur[ée]e/i],
+  ["Analyse critique", /analyse|critique|recul|justification|choix/i],
+  ["Démonstration", /d[ée]monstration|exemple/i],
+];
+
+const parseDate = d3.timeParse("%d/%m/%Y %H:%M:%S");
+const tip = d3.select("#tip");
+function showTip(ev, html) {
+  tip.html(html).style("opacity", 1);
+  const w = tip.node().offsetWidth;
+  tip.style("left", Math.min(ev.clientX + 14, innerWidth - w - 8) + "px").style("top", (ev.clientY + 14) + "px");
+}
+function hideTip() { tip.style("opacity", 0); }
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+/* ---------- Liens ---------- */
+function gridLinkType(url) {
+  if (!url) return { ok: false, label: "Absent" };
+  if (/forms\.gle\//.test(url)) return { ok: true, label: "Google Form (lien court)" };
+  if (/docs\.google\.com\/forms\//.test(url)) return { ok: true, label: "Google Form" };
+  if (/docs\.google\.com\/spreadsheets\//.test(url)) return { ok: false, label: "Tableur au lieu d'un formulaire" };
+  return { ok: true, label: "Autre lien" };
+}
+
+// Retourne l'URL CSV candidate et la nature de la conversion
+function csvCandidate(url) {
+  if (!url) return null;
+  const gid = (url.match(/[?&#]gid=(\d+)/) || [])[1];
+  if (/\/spreadsheets\/d\/e\/[^/]+\/pub\?/.test(url) && /output=csv/.test(url)) return { url, fixed: null };
+  let m = url.match(/(https:\/\/docs\.google\.com\/spreadsheets\/d\/e\/[^/]+)\/pub(html)?/);
+  if (m) return { url: `${m[1]}/pub?${gid ? `gid=${gid}&single=true&` : ""}output=csv`, fixed: "pubhtml → CSV" };
+  m = url.match(/https:\/\/docs\.google\.com\/spreadsheets\/d\/([^/]+)/);
+  if (m) return { url: `https://docs.google.com/spreadsheets/d/${m[1]}/export?format=csv${gid ? `&gid=${gid}` : ""}`, fixed: "lien /edit → export CSV" };
+  return null;
+}
+
+async function loadResult(url) {
+  const cand = csvCandidate(url);
+  if (!cand) return { status: "bad", label: "Lien non reconnu" };
+  try {
+    const txt = await d3.text(cand.url);
+    if (/^\s*</.test(txt)) return { status: "bad", label: "Page HTML, pas un CSV" };
+    const rows = d3.csvParse(txt);
+    return {
+      status: rows.length ? (cand.fixed ? "warn" : "good") : "empty",
+      label: rows.length ? `${rows.length} réponse${rows.length > 1 ? "s" : ""}` : "Publié mais vide",
+      fixed: cand.fixed, rows, columns: rows.columns,
+    };
+  } catch (e) {
+    return { status: "bad", label: "Privé ou inaccessible", fixed: cand.fixed };
+  }
+}
+
+/* ---------- Analyse des colonnes ---------- */
+const isMeta = c => /^horodateur$/i.test(c.trim()) || /e-?mail/i.test(c);
+const isIdentity = c => /\bnom\b|pr[ée]nom|login|^\s*quels? (est le nom du )?projet|nom du projet|url du projet|^\s*dans quel cadre|^\s*quels? version/i.test(c);
+function toNumber(v) {
+  if (v == null) return NaN;
+  const m = String(v).trim().match(/^(-?\d+(?:[.,]\d+)?)/);
+  return m ? +m[1].replace(",", ".") : NaN;
+}
+function cleanLabel(c) { return c.replace(/\s*\n[\s\S]*$/, "").replace(/\s*\(Échelle[\s\S]*$/i, "").replace(/^\s*\d+\s*[-.]\s*/, "").trim(); }
+function maxFromHeader(c) { const m = c.match(/\/\s*(\d+)\s*\)?\s*$/) || c.match(/\(\s*\/\s*(\d+)\s*\)/); return m ? +m[1] : null; }
+
+function analyse(res) {
+  if (!res.rows) return null;
+  const out = { criteria: [], identity: [], comments: [] };
+  for (const c of res.columns) {
+    if (isMeta(c)) continue;
+    const vals = res.rows.map(r => (r[c] ?? "").trim()).filter(v => v !== "");
+    if (isIdentity(c)) { out.identity.push(c); continue; }
+    const yn = vals.length && vals.every(v => /^(oui|non)$/i.test(v));
+    const nums = vals.map(toNumber);
+    const numeric = vals.length && nums.every(n => !isNaN(n));
+    if (yn) {
+      const oui = vals.filter(v => /^oui$/i.test(v)).length;
+      out.criteria.push({ col: c, label: cleanLabel(c), type: "yn", oui, non: vals.length - oui, n: vals.length });
+    } else if (numeric) {
+      const hmax = maxFromHeader(c);
+      const vmax = d3.max(nums);
+      // une valeur libellée « Excellent » indique le maximum du barème
+      const exc = vals.filter(v => /excellent/i.test(v)).map(toNumber);
+      const max = hmax ?? (exc.length ? d3.max(exc) : null) ?? (vmax <= 5 ? 5 : vmax <= 10 ? 10 : 20);
+      out.criteria.push({ col: c, label: cleanLabel(c), type: "num", mean: d3.mean(nums), min: d3.min(nums), max, values: nums, n: vals.length });
+    } else if (!vals.length) {
+      out.criteria.push({ col: c, label: cleanLabel(c), type: "none", n: 0 });
+    } else {
+      out.criteria.push({ col: c, label: cleanLabel(c), type: "text", n: vals.length });
+      res.rows.forEach(r => { const v = (r[c] ?? "").trim(); if (v) out.comments.push({ crit: cleanLabel(c), text: v, who: out.identity.map(i => r[i]).filter(Boolean).join(" · ") }); });
+    }
+  }
+  return out;
+}
+
+/* ---------- Rendu ---------- */
+const STATUS = {
+  good: { c: "var(--good)", icon: "✓" },
+  warn: { c: "var(--warning)", icon: "!" },
+  empty: { c: "var(--warning)", icon: "○" },
+  bad: { c: "var(--critical)", icon: "✕" },
+};
+function statusHTML(st, label, sub) {
+  const s = STATUS[st];
+  return `<span class="status"><i class="dot" style="background:${s.c}"></i><span aria-hidden="true">${s.icon}</span> ${esc(label)}</span>${sub ? `<br><small style="color:var(--text-muted)">${esc(sub)}</small>` : ""}`;
+}
+
+function renderKPIs(data) {
+  const results = data.flatMap(d => [d.res.projets, d.res.presentations]);
+  const readable = results.filter(r => r.rows && r.rows.length).length;
+  const evals = d3.sum(results, r => r.rows ? r.rows.length : 0);
+  const grids = data.flatMap(d => [d.gridP, d.gridS]).filter(g => g.ok).length;
+  const items = [
+    [data.length, "réponses au formulaire"],
+    [`${grids}/${data.length * 2}`, "grilles (Google Forms) fournies"],
+    [`${readable}/${results.length}`, "résultats lisibles avec au moins une réponse"],
+    [evals, "évaluations collectées au total"],
+  ];
+  d3.select("#kpis").html(items.map(([v, l]) => `<div class="kpi"><div class="v">${v}</div><div class="l">${l}</div></div>`).join(""));
+}
+
+function renderTimeline(data) {
+  const el = d3.select("#timeline"), W = el.node().clientWidth, H = 110, m = { l: 36, r: 36, t: 16, b: 28 };
+  const x = d3.scaleTime().domain(d3.extent(data, d => d.date)).nice().range([m.l, W - m.r]);
+  const svg = el.append("svg").attr("width", W).attr("height", H);
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`)
+    .call(d3.axisBottom(x).ticks(Math.min(8, W / 120)).tickFormat(d3.timeFormat("%d/%m %Hh")));
+  // empilement des points proches
+  const sorted = [...data].sort((a, b) => a.date - b.date);
+  let lastX = -Infinity, lvl = 0;
+  sorted.forEach(d => { const px = x(d.date); lvl = px - lastX < 14 ? lvl + 1 : 0; lastX = px; d._y = H - m.b - 14 - lvl * 14; });
+  svg.append("line").attr("x1", m.l).attr("x2", W - m.r).attr("y1", H - m.b - 14).attr("y2", H - m.b - 14).attr("stroke", "var(--grid)");
+  const g = svg.selectAll("g.pt").data(sorted).join("g").attr("class", "pt").attr("transform", d => `translate(${x(d.date)},${d._y})`);
+  g.append("circle").attr("r", 12).attr("fill", "transparent");
+  g.append("circle").attr("r", 5).attr("fill", "var(--series-1)").attr("stroke", "var(--surface-1)").attr("stroke-width", 2);
+  g.on("mousemove", (ev, d) => showTip(ev, `<b>${esc(d.login)}</b>${d3.timeFormat("%d/%m/%Y à %H:%M")(d.date)}`)).on("mouseleave", hideTip);
+}
+
+function renderLinks(data) {
+  const head = `<thead><tr><th>Login</th><th>Grille projets</th><th>Résultats projets</th><th>Grille présentations</th><th>Résultats présentations</th></tr></thead>`;
+  const gridCell = (g, url) => `<td>${statusHTML(g.ok ? "good" : "bad", g.label)} ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Ouvrir">↗</a>` : ""}</td>`;
+  const resCell = (r, url) => `<td>${statusHTML(r.status, r.label, r.fixed && r.status !== "bad" ? `converti : ${r.fixed}` : null)} ${url ? `<a href="${esc(url)}" target="_blank" rel="noopener" title="Ouvrir">↗</a>` : ""}</td>`;
+  const body = data.map(d => `<tr><td><a href="https://github.com/${esc(d.login)}" target="_blank" rel="noopener">${esc(d.login)}</a></td>
+    ${gridCell(d.gridP, d.raw[COLS.gridP])}${resCell(d.res.projets, d.raw[COLS.resP])}
+    ${gridCell(d.gridS, d.raw[COLS.gridS])}${resCell(d.res.presentations, d.raw[COLS.resS])}</tr>`).join("");
+  d3.select("#links").html(head + `<tbody>${body}</tbody>`);
+}
+
+function renderSizes(data) {
+  const rows = data.map(d => ({ login: d.login, projets: d.an.projets?.criteria.length ?? null, presentations: d.an.presentations?.criteria.length ?? null }));
+  const el = d3.select("#sizes"), W = el.node().clientWidth;
+  const m = { l: 150, r: 40, t: 8, b: 28 }, band = 34, H = m.t + m.b + rows.length * band;
+  const y = d3.scaleBand().domain(rows.map(d => d.login)).range([m.t, H - m.b]).paddingInner(0.25);
+  const sub = d3.scaleBand().domain(["projets", "presentations"]).range([0, y.bandwidth()]).paddingInner(0.15);
+  const x = d3.scaleLinear().domain([0, d3.max(rows, d => Math.max(d.projets ?? 0, d.presentations ?? 0)) || 1]).nice().range([m.l, W - m.r]);
+  const svg = el.append("svg").attr("width", W).attr("height", H);
+  svg.append("g").attr("class", "grid").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(6).tickSize(-(H - m.t - m.b)).tickFormat(""));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(6).tickFormat(d3.format("d")));
+  svg.append("g").attr("class", "axis").attr("transform", `translate(${m.l},0)`).call(d3.axisLeft(y).tickSize(0).tickPadding(8)).select(".domain").remove();
+  const flat = rows.flatMap(d => ["projets", "presentations"].map(k => ({ login: d.login, k, v: d[k] })));
+  const g = svg.append("g").selectAll("g").data(flat).join("g").attr("transform", d => `translate(0,${y(d.login) + sub(d.k)})`);
+  g.filter(d => d.v != null).append("path")
+    .attr("d", d => { const w = Math.max(0, x(d.v) - m.l), h = sub.bandwidth(), r = Math.min(4, w, h / 2); return `M${m.l},0h${w - r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${w - r}z`; })
+    .attr("fill", d => KINDS[d.k].color);
+  g.filter(d => d.v == null).append("text").attr("x", m.l + 6).attr("y", sub.bandwidth() / 2).attr("dy", "0.35em").style("font-size", "11px").style("fill", "var(--text-muted)").text("non lisible");
+  g.filter(d => d.v != null).append("text").attr("x", d => x(d.v) + 4).attr("y", sub.bandwidth() / 2).attr("dy", "0.35em").style("font-size", "11px").text(d => d.v);
+  g.append("rect").attr("x", m.l).attr("width", W - m.r - m.l).attr("height", sub.bandwidth()).attr("fill", "transparent")
+    .on("mousemove", (ev, d) => showTip(ev, `<b>${esc(d.login)} — ${KINDS[d.k].label}</b>${d.v == null ? "Résultats non lisibles" : `${d.v} critère${d.v > 1 ? "s" : ""}`}`))
+    .on("mouseleave", hideTip);
+}
+
+function renderThemes(data, kind) {
+  const el = d3.select("#themes").html("");
+  const rows = data.filter(d => d.an[kind]);
+  if (!rows.length) { el.html('<p class="empty">Aucune grille lisible.</p>'); return; }
+  const counts = rows.map(d => {
+    const c = Object.fromEntries(THEMES.map(([t]) => [t, []]));
+    d.an[kind].criteria.forEach(cr => THEMES.forEach(([t, re]) => { if (re.test(cr.col)) c[t].push(cr.label); }));
+    return { login: d.login, c };
+  });
+  const used = THEMES.map(([t]) => t).filter(t => counts.some(r => r.c[t].length));
+  const color = d3.scaleThreshold().domain([1, 2, 3]).range(["var(--seq-0)", "var(--seq-1)", "var(--seq-2)", "var(--seq-3)"]);
+  const ink = v => v >= 2 ? "#fff" : "var(--text-primary)";
+  const table = el.append("table").attr("class", "heat");
+  table.append("thead").append("tr").selectAll("th").data(["Thème", ...rows.map(r => r.login), "Grilles"]).join("th").attr("class", (d, i) => i ? "num" : null).text(d => d);
+  const tr = table.append("tbody").selectAll("tr").data(used).join("tr");
+  tr.append("th").text(t => t);
+  tr.selectAll("td.cell").data(t => counts.map(r => ({ t, login: r.login, labels: r.c[t] }))).join("td").attr("class", "cell")
+    .style("background", d => color(d.labels.length)).style("color", d => ink(d.labels.length))
+    .text(d => d.labels.length || "")
+    .on("mousemove", (ev, d) => showTip(ev, `<b>${esc(d.login)} — ${esc(d.t)}</b>${d.labels.length ? d.labels.map(esc).join("<br>") : "Aucun critère"}`))
+    .on("mouseleave", hideTip);
+  tr.append("td").attr("class", "num").text(t => `${counts.filter(r => r.c[t].length).length}/${counts.length}`);
+}
+
+function renderDetail(data, login, kind) {
+  const el = d3.select("#detail").html("");
+  const d = data.find(x => x.login === login);
+  const res = d.res[kind], an = d.an[kind];
+  el.append("p").attr("class", "note").html(`${statusHTML(res.status, res.label, res.fixed)} &nbsp; <a href="${esc(d.raw[COLS[KINDS[kind].grid]])}" target="_blank" rel="noopener">Voir la grille ↗</a>`);
+  if (!an) { el.append("p").attr("class", "empty").text("Ces résultats ne peuvent pas être lus : ils doivent être publiés sur le Web au format CSV."); return; }
+  if (!res.rows.length) {
+    el.append("p").attr("class", "empty").text("La grille est publiée mais ne contient encore aucune réponse. Critères proposés :");
+    el.append("ul").selectAll("li").data(an.criteria).join("li").text(c => c.label);
+    return;
+  }
+  const crit = an.criteria.filter(c => c.type === "num" || c.type === "yn");
+  if (crit.length) {
+    const W = el.node().clientWidth, rowH = 34, lw = Math.min(380, W * 0.45), m = { l: lw, r: 70, t: 8, b: 28 };
+    const H = m.t + m.b + crit.length * rowH;
+    const x = d3.scaleLinear().domain([0, 1]).range([m.l, W - m.r]);
+    const y = d3.scaleBand().domain(crit.map(c => c.col)).range([m.t, H - m.b]).paddingInner(0.35);
+    el.append("p").attr("class", "note").text(`Score moyen de chaque critère, rapporté à son maximum (${res.rows.length} évaluation${res.rows.length > 1 ? "s" : ""}). Pour les critères Oui/Non : part de « Oui ».`);
+    const svg = el.append("svg").attr("width", W).attr("height", H);
+    svg.append("g").attr("class", "grid").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(5).tickSize(-(H - m.t - m.b)).tickFormat(""));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(5).tickFormat(d3.format(".0%")));
+    const g = svg.append("g").selectAll("g").data(crit).join("g").attr("transform", c => `translate(0,${y(c.col)})`);
+    g.append("text").attr("x", m.l - 10).attr("y", y.bandwidth() / 2).attr("dy", "0.35em").attr("text-anchor", "end").style("fill", "var(--text-primary)")
+      .text(c => c.label.length > lw / 6.5 ? c.label.slice(0, Math.floor(lw / 6.5) - 1) + "…" : c.label);
+    const ratio = c => c.type === "num" ? c.mean / c.max : c.oui / c.n;
+    g.append("path").attr("fill", KINDS[kind].color)
+      .attr("d", c => { const w = Math.max(0, x(Math.min(1, ratio(c))) - m.l), h = y.bandwidth(), r = Math.min(4, w, h / 2); return `M${m.l},0h${w - r}a${r},${r} 0 0 1 ${r},${r}v${h - 2 * r}a${r},${r} 0 0 1 -${r},${r}h-${w - r}z`; });
+    g.append("text").attr("x", c => x(Math.min(1, ratio(c))) + 6).attr("y", y.bandwidth() / 2).attr("dy", "0.35em")
+      .text(c => c.type === "num" ? `${d3.format(".2~f")(c.mean)} / ${c.max}` : `${c.oui} oui / ${c.n}`);
+    g.append("rect").attr("width", W).attr("height", y.bandwidth()).attr("fill", "transparent")
+      .on("mousemove", (ev, c) => showTip(ev, `<b>${esc(c.label)}</b>` + (c.type === "num"
+        ? `Moyenne ${d3.format(".2~f")(c.mean)} / ${c.max}<br>Valeurs : ${c.values.map(v => d3.format("~g")(v)).join(", ")}`
+        : `Oui : ${c.oui} · Non : ${c.non}`)))
+      .on("mouseleave", hideTip);
+  }
+  const unused = an.criteria.filter(c => c.type === "none");
+  if (unused.length) el.append("p").attr("class", "note").text(`Critères sans réponse : ${unused.map(c => c.label).join(" ; ")}`);
+  if (an.comments.length) {
+    el.append("h3").style("font-size", "15px").style("margin", "16px 0 4px").text("Commentaires");
+    el.append("ul").attr("class", "comments").selectAll("li").data(an.comments).join("li")
+      .html(c => `${esc(c.text)}<br><em>${esc(c.crit)}${c.who ? " — " + esc(c.who) : ""}</em>`);
+  }
+  // vue tableau
+  const det = el.append("details");
+  det.append("summary").text("Voir les données brutes");
+  const cols = res.columns.filter(c => !/e-?mail/i.test(c));
+  const t = det.append("div").attr("class", "scroll").append("table");
+  t.append("thead").append("tr").selectAll("th").data(cols).join("th").text(c => cleanLabel(c));
+  t.append("tbody").selectAll("tr").data(res.rows).join("tr").selectAll("td").data(r => cols.map(c => r[c])).join("td").text(v => v);
+}
+
+function segmented(id, onChange) {
+  const seg = d3.select(id);
+  seg.selectAll("button").on("click", function () {
+    seg.selectAll("button").attr("aria-pressed", "false");
+    d3.select(this).attr("aria-pressed", "true");
+    onChange(this.dataset.k);
+  });
+}
+
+/* ---------- Démarrage ---------- */
+(async function main() {
+  let raw;
+  try { raw = await d3.csv(SOURCE); }
+  catch (e) { d3.select("#kpis").html(`<div class="kpi">Impossible de charger le CSV source : ${esc(e.message)}</div>`); return; }
+  const data = raw.map(r => ({
+    raw: r, login: r[COLS.login].trim(), date: parseDate(r[COLS.date]),
+    gridP: gridLinkType(r[COLS.gridP]), gridS: gridLinkType(r[COLS.gridS]),
+  }));
+  await Promise.all(data.map(async d => {
+    const [p, s] = await Promise.all([loadResult(d.raw[COLS.resP]), loadResult(d.raw[COLS.resS])]);
+    d.res = { projets: p, presentations: s };
+    d.an = { projets: analyse(p), presentations: analyse(s) };
+  }));
+
+  renderKPIs(data);
+  renderTimeline(data);
+  renderLinks(data);
+  renderSizes(data);
+  renderThemes(data, "projets");
+  segmented("#themeSeg", k => renderThemes(data, k));
+
+  let kind = "projets";
+  const who = d3.select("#who");
+  who.selectAll("option").data(data).join("option").attr("value", d => d.login).text(d => d.login);
+  const firstReadable = data.find(d => d.an.projets && d.res.projets.rows.length) || data[0];
+  who.property("value", firstReadable.login);
+  const refresh = () => renderDetail(data, who.property("value"), kind);
+  who.on("change", refresh);
+  segmented("#kindSeg", k => { kind = k; refresh(); });
+  refresh();
+})();
+</script>
+</body>
+</html>
